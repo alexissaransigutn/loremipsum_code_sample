@@ -1,0 +1,14 @@
+ga_core.settings.form:
+  path: '/admin/config/content/ga-global-settings'
+  defaults:
+    _form: '\Drupal\ga_core\Form\GaCoreSettingsForm'
+    _title: 'GA Global Settings'
+  requirements:
+    _permission: 'administer site configuration'
+ga_core.user_export_auth0.form:
+  path: '/admin/config/people/ga-auth0-export'
+  defaults:
+    _form: '\Drupal\ga_core\Form\GaCoreUserAuth0ExportForm'
+    _title: 'GA User Export'
+  requirements:
+    _permission: 'administer site configuration'

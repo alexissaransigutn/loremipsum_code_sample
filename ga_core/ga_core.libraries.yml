@@ -1,0 +1,9 @@
+eb_view_decoration:
+  css:
+    theme:
+      css/ga_core.eb_view_decoration.css: {}
+  js:
+    js/ga_core.eb_view_decoration.js: {}
+  dependencies:
+  - core/jquery
+  - core/drupal

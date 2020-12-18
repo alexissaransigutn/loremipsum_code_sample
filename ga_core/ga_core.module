@@ -1,0 +1,226 @@
+<?php
+
+/**
+ * @file
+ * Contains ga_core hooks.
+ */
+
+use Drupal\Core\Access\AccessResult;
+use Drupal\Core\Breadcrumb\Breadcrumb;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Link;
+use Drupal\Core\Menu\MenuTreeParameters;
+use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\Core\Session\AccountInterface;
+use Drupal\Core\Url;
+use Drupal\ga_core\Access\GaMediaAccessHandler;
+use Drupal\ga_core\Access\GaNodeAccessHandler;
+use Drupal\taxonomy\Entity\Term;
+use IndefiniteArticle\IndefiniteArticle;
+use CommerceGuys\Addressing\AddressFormat\FieldOverride;
+use CommerceGuys\Addressing\AddressFormat\AddressField;
+
+/**
+ * Implements hook_page_attachments().
+ */
+function ga_core_page_attachments(array &$page)
+{
+  if (\Drupal::service('module_handler')->moduleExists('bu')) {
+    $page['#attached']['library'][] = 'ga_core/buorg';
+  }
+}
+
+/**/
+/**
+ * Implements hook_entity_type_alter().
+ */
+function ga_core_entity_type_alter(array &$entity_types) {
+  // Set a custom access handler to node and media entities. This will allow us
+  // to take control over the access handling and use for example to: 1) more
+  // easily make the "Delete" tab/button/link disappear (in favor of "Move
+  // to Trash", etc); 2) Deny access on the canonical route of media items for
+  // non admin users, etc.
+  // @todo If in the future new entities become "trasheable", they would need
+  // to have their access handler overriden here too.
+  $entity_types['node']->setHandlerClass('access', GaNodeAccessHandler::class);
+  $entity_types['media']->setHandlerClass('access', GaMediaAccessHandler::class);
+}
+
+/**
+ * Implements hook_views_plugins_wizard_alter().
+ */
+function ga_core_views_plugins_wizard_alter(array &$plugins) {
+  // Hijack the Media views wizard plugin and make it use our subclass instead.
+  // @see \Drupal\ga_core\Plugin\views\wizard\GaMedia
+  if (!empty($plugins['media'])) {
+    $plugins['media']['class'] = 'Drupal\ga_core\Plugin\views\wizard\GaMedia';
+  }
+  // Do the same for node views.
+  if (!empty($plugins['node'])) {
+    $plugins['node']['class'] = 'Drupal\ga_core\Plugin\views\wizard\GaNode';
+  }
+}
+
+/**
+ * Implements hook_preprocess_views_view().
+ */
+function ga_core_preprocess_views_view(&$variables)
+{
+  // Add entity browser library tweaks when appropriate.
+  $affected_views = [
+    'content_browser',
+    'media_browser',
+    'document_browser',
+    'micro_content_browser',
+  ];
+  if (in_array($variables['view']->id(), $affected_views)) {
+    $variables['view_array']['#attached']['library'][] = 'ga_core/eb_view_decoration';
+  }
+
+  // On the "/news" view, we need to override the title, which can be defined
+  // per site in the global config.
+  if ($variables['view']->id() === 'news' && !empty($variables['view_array']['#title']['#markup'])) {
+    // The title might be "Blog" or "Blog: Term name". We want to replace the
+    // the first word only.
+    $current_title = $variables['view_array']['#title']['#markup'];
+    $new_base_title = \Drupal::config('ga_core.settings')->get('news_view_title') ?? 'News';
+  }
+
+  // On the "/press-releases" view, the title needs to be adjusted if there is
+  // an exposed filter set.
+  if ($variables['view']->id() === 'press_releases' && !empty($variables['view_array']['#title']['#markup'])) {
+    /** @var \Drupal\views\ViewExecutable $view */
+    $view = $variables['view'];
+    $input = $view->getExposedInput();
+    if (!empty($input['field_press_release_type_target_id'])) {
+      $term = Term::load($input['field_press_release_type_target_id']);
+      if ($term) {
+        $variables['view_array']['#title']['#markup'] .= ': ' . $term->label();
+      }
+    }
+  }
+
+  // On the "cases" view, we also have some massaging to do.
+  if ($variables['view']->id() === 'cases') {
+    /** @var \Drupal\views\ViewExecutable $view */
+    $view = $variables['view'];
+    $args = $view->args;
+    if (!empty($args[0])) {
+      // Adjust the page title accordingly. We are not using the
+      // standard contextual filter substitution here since we don't have that
+      // for free here since this is not a taxonomy term name (see
+      // GaCaseTypeOptionValueName for more info).
+      $variables['view_array']['#title']['#markup'] = ucwords(str_replace('-', ' ', $args[0]));
+      // Adjust the label of the "Date" column depending on the contextual
+      // filter.
+      if (isset($variables['view']->field['field_case_date']->options['label'])) {
+        // Right now all option values for field_case_type follow a pattern that
+        // uses the lower-cased first word as its key. We rely on that being
+        // true so this mapping works.
+        list($type,) = explode("-", $args[0]);
+        $variables['view']->field['field_case_date']->options['label'] = ga_helper_get_case_date_label_string($type);
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_cron().
+ */
+function ga_core_cron()
+{
+  // If dropzonejs file uploads break after the file has been POSTed by the
+  // browser, but before it was moved to its final destination by DropzoneJS,
+  // we might end up with unmanaged *.txt files around. Here we clean them up.
+  // See \Drupal\dropzonejs\UploadHandler::handleUpload() and
+  // \Drupal\dropzonejs\UploadHandler::getFilename() for more info on this.
+  $upload_scheme = \Drupal::config('dropzonejs.settings')->get('tmp_upload_scheme');
+  if ($upload_scheme === 'temporary') {
+    // There is no need to do garbage collection on the temporary directory.
+    return;
+  }
+  foreach (glob(\Drupal::service('file_system')->realpath($upload_scheme . '://') . '/*.*.txt') as $file) {
+    // Only remove this file if it's older than 1 day.
+    if ((time() - filemtime($file)) > (60 * 60 * 24)) {
+      // Only remove this if it's really orphan.
+      $count = \Drupal::database()->select('file_managed', 'fm')
+        ->fields('fm', ['fid'])
+        ->condition('filename', basename($file))
+        ->countQuery()
+        ->execute()
+        ->fetchField();
+      if (empty($count)) {
+        \Drupal::service('file_system')->delete($file);
+        \Drupal::logger('ga_core')->debug('GA Garbage collection removed unmanaged file in path: ' . $file);
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function ga_core_theme($existing, $type, $theme, $path)
+{
+  return [
+    'dol_rss_feed_block' => [
+      'variables' => [
+        'items' => NULL,
+        'more_url' => NULL,
+      ],
+    ],
+    'landing_page_header' => [
+      'variables' => [
+        'eyebrow' => NULL,
+        'title' => NULL,
+        'summary' => NULL,
+      ],
+    ],
+    'ga_telephone_number' => [
+      'variables' => [
+        'number' => NULL,
+        'phone_type' => NULL,
+        'extension' => NULL,
+        'instructions' => NULL,
+        'vanity' => NULL,
+      ],
+    ],
+    'gspc_json_feed_block' => [
+      'variables' => [
+        'for_sale_items' => NULL,
+        'sold_items' => NULL,
+      ],
+    ],
+  ];
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function ga_core_form_views_exposed_form_alter(&$form, FormStateInterface $form_state, $form_id)
+{
+  // On the "cases" view, we have some exposed-filter fine-tuning to do.
+  $case_views = [
+    'cases',
+  ];
+  if (!empty($form['#context']['view']) && in_array($form['#context']['view']->id(), $case_views)) {
+    // Override the "Sort By" value corresponding to field_case_date, since
+    // we want to use our custom label when referring to those dates.
+    if (!empty($form['sort_by']['#options']['field_case_date_value'])) {
+      $args = $form['#context']['view']->args;
+      if (!empty($args[0])) {
+        // Right now all option values for field_case_type follow a pattern that
+        // uses the lower-cased first word as its key. We rely on that being
+        // true so this mapping works.
+        list($type,) = explode("-", $args[0]);
+        $form['sort_by']['#options']['field_case_date_value'] = ga_helper_get_case_date_label_string($type);
+      }
+    }
+    // We also want to change ASC/DESC to something more digestible by humans.
+    if (!empty($form['sort_order']['#options'])) {
+      $form['sort_order']['#options']['ASC'] = t('Oldest to Newest');
+      $form['sort_order']['#options']['DESC'] = t('Newest to Oldest');
+    }
+  }
+}

@@ -1,0 +1,10 @@
+ga_core.configuration_form:
+  title: 'GA Global Settings'
+  parent: system.admin_config_content
+  description: 'Configure GA Global settings'
+  route_name: ga_core.settings.form
+ga_core.reports.entity_counts:
+  title: 'Entity Counts'
+  parent: system.admin_reports
+  description: 'Sum of published entities across types.'
+  route_name: view.entity_counts.content_node_count

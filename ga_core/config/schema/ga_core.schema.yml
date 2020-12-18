@@ -1,0 +1,11 @@
+ga_core.settings:
+  type: config_object
+  mapping:
+    location_closed_message:
+      label: 'Message to show when a location is closed.'
+      type: string
+    locations_view_areas_served_header_override:
+      label: 'Text to use instead of the Areas Served column header text.'
+    find_a_location_header_node:
+      label: 'The ID of the node to be used as header in the Find a Location view.'
+      type: string

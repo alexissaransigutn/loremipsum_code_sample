@@ -1,0 +1,93 @@
+<?php
+
+/**
+ * @file
+ * Install, Uninstall and Update hooks for ga_core.
+ */
+
+use Drupal\Core\Entity\EntityDefinitionUpdateManagerInterface;
+use Drupal\Core\Url;
+use Drupal\user\Entity\Role;
+use Lorem\Env;
+use Lorem\Switchboard;
+
+/**
+ * Implements hook_install().
+ */
+function ga_core_install() {
+  $expirations = [
+    // Role "editor" should be inactive after 6 months.
+    'editor' => 15552000,
+  ];
+  _ga_core_set_user_expirations($expirations);
+
+  // After Drupal 8.7.0, core has eliminated the media/123 canonical template.
+  // We have our own access control to prevent unauthorized users from accessing
+  // it, but we still use it, so we want to keep it in place.
+  \Drupal::configFactory()
+    ->getEditable('media.settings')
+    ->set('standalone_url', TRUE)
+    ->save(TRUE);
+}
+
+/**
+ * Save user expiration delays into the Database.
+ *
+ * This function will only save new values if current values are undefined or 0.
+ *
+ * @param array $expirations
+ *   An associative array where keys are Role machine names (rid), and values
+ *   are their expected "inactivity_period" delay, in seconds.
+ */
+function _ga_core_set_user_expirations(array $expirations) {
+  if (\Drupal::database()->schema()->tableExists('user_expire_roles')) {
+    foreach ($expirations as $rid => $delay) {
+      // Discard garbage passed in.
+      if (empty($delay)) {
+        continue;
+      }
+      $role = Role::load($rid);
+      if (empty($role)) {
+        continue;
+      }
+      $query = \Drupal::database()->select('user_expire_roles');
+      $query->fields('user_expire_roles', ['inactivity_period']);
+      $query->condition('rid', $rid);
+      $current_delay = $query->execute()->fetchField();
+      // We don't want to override existing non-empty delays.
+      if (empty($current_delay)) {
+        \Drupal::database()->merge('user_expire_roles')
+          ->keys(['rid' => $rid])
+          ->fields([
+            'inactivity_period' => $delay,
+          ])
+          ->execute();
+      }
+    }
+    // The "Authenticated" user should never have an expiration set.
+    \Drupal::database()->merge('user_expire_roles')
+      ->keys(['rid' => 'authenticated'])
+      ->fields([
+        'inactivity_period' => 0,
+      ])
+      ->execute();
+  }
+}
+
+/**
+ * Set the news view basepath to "blogs" on appropriate sites.
+ */
+function ga_core_update_8101(&$sandbox) {
+  $sites_to_use_blogs_as_basepath = [
+    'digitalservices',
+  ];
+  foreach ($sites_to_use_blogs_as_basepath as $sitename) {
+    if (Env::getSiteName() === $sitename) {
+      \Drupal::configFactory()
+        ->getEditable('ga_core.settings')
+        ->set('news_view_basepath', 'blogs')
+        ->set('news_view_title', 'Blog')
+        ->save(TRUE);
+    }
+  }
+}

@@ -1,0 +1,34 @@
+services:
+  access_check.ga.site:
+    class: Drupal\ga_core\Access\SiteAccessCheck
+    arguments: ['@string_translation']
+    tags:
+      - { name: access_check, applies_to: _ga_site }
+  ga_core.twig.palette_data_attributes_extension:
+    arguments: ['@renderer']
+    class: Drupal\ga_core\TwigExtension\PaletteDataAttributesExtension
+    tags:
+    - { name: twig.extension }
+  ga_core.twig.include_svg_extension:
+    arguments: ['@renderer']
+    class: Drupal\ga_core\TwigExtension\IncludeSvgExtension
+    tags:
+    - { name: twig.extension }
+  ga_core.twig.array_column:
+    arguments: ['@renderer']
+    class: Drupal\ga_core\TwigExtension\ArrayColumn
+    tags:
+    - { name: twig.extension }
+  # We re-define the core BookBreadcrumbBuilder service here, only to be able to
+  # override its priority and set a higher number than the current's
+  # easy_breadcrumb's priority (currently, 1003). This will result in the
+  # book's module builder being used if it applies to the page, instead of
+  # easy_breadcrumb's one. The only drawback here is that we lose then in book
+  # pages easy_breadcrumb features, such as the inclusion of the current node's
+  # unlinked title as the last element of the breadcrumb. This is fixed manually
+  # in ga_core_system_breadcrumb_alter().
+  book.breadcrumb:
+    class: Drupal\book\BookBreadcrumbBuilder
+    arguments: ['@entity.manager', '@current_user']
+    tags:
+      - { name: breadcrumb_builder, priority: 1004 }
